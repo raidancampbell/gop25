@@ -1,0 +1,1 @@
+Drop the named capture fixture here to enable the corresponding integration test. Large binaries are kept out of git; the test t.Skipf's when the file is absent.

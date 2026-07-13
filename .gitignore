@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Go build/test artifacts
+*.test
+*.out
+*.prof
+*.cpu
+*.mem
+
+# Large capture fixtures (drop locally to enable integration tests; see testdata/.gitkeep)
+testdata/**/*.iq
+testdata/**/*.wav
