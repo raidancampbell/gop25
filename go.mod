@@ -2,7 +2,7 @@ module github.com/raidancampbell/gop25
 
 go 1.26.2
 
-require github.com/raidancampbell/godsp v0.1.0
+require github.com/raidancampbell/godsp v0.2.0
 
 require (
 	github.com/mmcloughlin/avo v0.6.0 // indirect

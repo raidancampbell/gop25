@@ -202,6 +202,22 @@ func parseOne(t *testing.T, opcode, mfid uint8, args [8]byte) TSBKData {
 	return got[0]
 }
 
+func TestParseTSBK_TelephoneInterconnectGrant(t *testing.T) {
+	// 0x08 TELE_INT_CH_GRANT: svc[8] ch[16] callTimer[16] tgt[24].
+	// svc=0x00 ch=0x1023 callTimer=0x003C tgt=0x00ABCD
+	tsbk := parseOne(t, 0x08, 0x00,
+		[8]byte{0x00, 0x10, 0x23, 0x00, 0x3C, 0x00, 0xAB, 0xCD})
+	if tsbk.Opcode != OpcodeTeleIntVoiceGrant {
+		t.Fatalf("Opcode = 0x%02X, want 0x08", uint8(tsbk.Opcode))
+	}
+	if tsbk.ChannelID != 0x1023 {
+		t.Errorf("ChannelID = 0x%04X, want 0x1023", tsbk.ChannelID)
+	}
+	if tsbk.DestID != 0x00ABCD {
+		t.Errorf("DestID = 0x%06X, want 0x00ABCD", tsbk.DestID)
+	}
+}
+
 func TestParseTSBK_KnownGrant(t *testing.T) {
 	// 0x00 GRP_V_CH_GRANT: svc=0x00 ch=0x100A tg=0x0064 src=0x003039 (12345)
 	tsbk := parseOne(t, 0x00, 0x00,
