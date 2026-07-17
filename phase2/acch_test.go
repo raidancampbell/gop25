@@ -296,6 +296,35 @@ func TestMACWalker_ReachesIdentityAfterLeadingSubMsg(t *testing.T) {
 	}
 }
 
+// A vendor sub-message (b1b2==2) whose inline length byte is 0 must resolve its
+// length from macMsgLenTable and let the walk continue, not abort it. op25
+// decode_mac_msg falls back to mac_msg_len[op] in exactly this case
+// (p25p2_tdma.cc:355-361). Before the fallback, the walker hit its msgLen==0
+// guard and silently dropped every later sub-message -- including the trailing
+// Group Voice Channel User identity asserted here.
+func TestWalkMACSubMessages_VendorZeroLenFallback(t *testing.T) {
+	// Leading vendor sub-message: op=0x80 (b1b2==2, macMsgLenTable[0x80]=8),
+	// mfid@+1, length byte@+2 = 0 -> must fall back to table length 8.
+	// Trailing sub-message at byte 9: op=0x01 Group Voice Channel User.
+	buf := make([]byte, 16)
+	buf[0] = 4 << 5 // MAC_ACTIVE opcode in bits 7:5
+	buf[1] = 0x80   // vendor sub-opcode (b1b2==2), table length 8
+	buf[2] = 0x90   // mfid
+	buf[3] = 0x00   // length field NOT set -> exercises the table fallback
+	// buf[4..8] remain zero (rest of the 8-byte vendor message body).
+	buf[9] = 0x01                                // Group Voice Channel User
+	buf[10] = 0x00                               // service opts
+	buf[11], buf[12] = 0x04, 0xD2                // ga = 1234
+	buf[13], buf[14], buf[15] = 0x00, 0x12, 0x34 // sa = 0x1234
+
+	p := &MACPDU{Opcode: 4, Bytes: buf}
+	walkMACSubMessages(p)
+	if !p.HasIdentity || p.Talkgroup != 1234 || p.SourceID != 0x1234 {
+		t.Fatalf("walker aborted at zero-length vendor sub-message: HasIdentity=%v tg=%d src=%#x",
+			p.HasIdentity, p.Talkgroup, p.SourceID)
+	}
+}
+
 func TestDecodeACCHBytes_LCCH_RoundTrip(t *testing.T) {
 	// LCCH: SACCH RS layout, 180-bit body, CRC-16, 23-byte output.
 	// Build a 164-bit data field + 16-bit CRC-16 = 180 bits, pack to hexbits at

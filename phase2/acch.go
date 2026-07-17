@@ -322,7 +322,15 @@ walkerLoop:
 				} else {
 					break walkerLoop
 				}
-			} else {
+			}
+			// Table fallback: the vendor length field is not always populated
+			// (op25 decode_mac_msg p25p2_tdma.cc:355-361 does the same
+			// `if (msg_len == 0) msg_len = mac_msg_len[op]` after the vendor
+			// read). Without this, a zero-length vendor sub-message hits the
+			// msgLen==0 guard below and aborts the whole walk, silently dropping
+			// every later sub-message in the PDU (e.g. a trailing 0x01 Group
+			// Voice Channel User identity or 0x91/0x95/0xA8 alias fragment).
+			if msgLen == 0 {
 				msgLen = int(macMsgLenTable[op])
 			}
 		}

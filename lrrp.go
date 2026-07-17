@@ -195,9 +195,84 @@ func (l *LRRPData) Position() (lat, lon, altMeters float64, ok bool) {
 			lat, lon = decodeLRRPLatLon(tok.Raw[:8])
 			altRaw := uint32(tok.Raw[8])<<16 | uint32(tok.Raw[9])<<8 | uint32(tok.Raw[10])
 			return lat, lon, float64(altRaw) * 0.01, true
+		case 0x51: // CIRCLE_2D: POINT_2D + 16-bit radius; the embedded point is
+			// still a position fix, so surface it (radius via Circle()).
+			if len(tok.Raw) < 8 {
+				continue
+			}
+			lat, lon = decodeLRRPLatLon(tok.Raw[:8])
+			return lat, lon, 0, true
+		case 0x55: // CIRCLE_3D: POINT_2D + radius + 16-bit altitude (Raw[10:12]).
+			if len(tok.Raw) < 12 {
+				continue
+			}
+			lat, lon = decodeLRRPLatLon(tok.Raw[:8])
+			altRaw := uint16(tok.Raw[10])<<8 | uint16(tok.Raw[11])
+			return lat, lon, float64(altRaw) * 0.01, true
 		}
 	}
 	return 0, 0, 0, false
+}
+
+// Circle returns the radius (meters) of a CIRCLE_2D (0x51) or CIRCLE_3D (0x55)
+// token, plus ok=true if present. Reference: sdrtrunk Circle2d.java (radius at
+// bits 72-87 of the token = Raw[8:10], scaled by 0.01). The embedded position
+// is available via Position().
+func (l *LRRPData) Circle() (radiusMeters float64, ok bool) {
+	if l == nil {
+		return 0, false
+	}
+	for _, tok := range l.Tokens {
+		if (tok.ID == 0x51 || tok.ID == 0x55) && len(tok.Raw) >= 10 {
+			raw := uint16(tok.Raw[8])<<8 | uint16(tok.Raw[9])
+			return float64(raw) * 0.01, true
+		}
+	}
+	return 0, false
+}
+
+// Response returns the RESPONSE token (0x37) code and its sdrtrunk mnemonic,
+// ok=true if present. Reference: sdrtrunk Response.java / ResponseCode.java:
+// Raw[0] bit 7 selects the short (7-bit) vs extended (15-bit) code form.
+func (l *LRRPData) Response() (code uint16, label string, ok bool) {
+	if l == nil {
+		return 0, "", false
+	}
+	for _, tok := range l.Tokens {
+		if tok.ID != 0x37 || len(tok.Raw) < 1 {
+			continue
+		}
+		if tok.Raw[0]&0x80 != 0 { // extended 15-bit code
+			if len(tok.Raw) < 2 {
+				continue
+			}
+			code = uint16(tok.Raw[0]&0x7f)<<8 | uint16(tok.Raw[1])
+		} else { // short 7-bit code
+			code = uint16(tok.Raw[0] & 0x7f)
+		}
+		return code, lrrpResponseCodeName(code), true
+	}
+	return 0, "", false
+}
+
+// lrrpResponseCodeName maps a RESPONSE token code to its sdrtrunk ResponseCode
+// mnemonic (ResponseCode.java). Unmapped codes return "UNKNOWN".
+func lrrpResponseCodeName(code uint16) string {
+	switch code {
+	case 0x00:
+		return "SUCCESS"
+	case 0x0A:
+		return "INVALID COMMAND"
+	case 0x0F:
+		return "UNRECOGNIZED ERROR"
+	case 0x10:
+		return "NO GPS"
+	case 0x16:
+		return "DUPLICATE REQUEST"
+	case 0x200:
+		return "GPS INITIALIZING"
+	}
+	return "UNKNOWN"
 }
 
 func decodeLRRPLatLon(p []byte) (lat, lon float64) {
@@ -348,9 +423,35 @@ func (t LRRPToken) Describe() (name, val string) {
 			alt := float64(uint32(t.Raw[8])<<16|uint32(t.Raw[9])<<8|uint32(t.Raw[10])) * 0.01
 			return name, fmt.Sprintf("%.5f°, %.5f°  alt %.1fm", lat, lon, alt)
 		}
+	case 0x51: // CIRCLE_2D: POINT_2D + 16-bit radius (Raw[8:10]) ×0.01 m.
+		if len(t.Raw) >= 10 {
+			lat, lon := decodeLRRPLatLon(t.Raw[:8])
+			r := float64(uint16(t.Raw[8])<<8|uint16(t.Raw[9])) * 0.01
+			return name, fmt.Sprintf("%.5f°, %.5f°  r %.1fm", lat, lon, r)
+		}
+	case 0x55: // CIRCLE_3D: POINT_2D + radius + 16-bit altitude (Raw[10:12]).
+		if len(t.Raw) >= 12 {
+			lat, lon := decodeLRRPLatLon(t.Raw[:8])
+			r := float64(uint16(t.Raw[8])<<8|uint16(t.Raw[9])) * 0.01
+			alt := float64(uint16(t.Raw[10])<<8|uint16(t.Raw[11])) * 0.01
+			return name, fmt.Sprintf("%.5f°, %.5f°  r %.1fm  alt %.1fm", lat, lon, r, alt)
+		}
+	case 0x37: // RESPONSE: 7-bit or extended 15-bit code (Raw[0] bit 7 selects).
+		if len(t.Raw) >= 1 {
+			var code uint16
+			if t.Raw[0]&0x80 != 0 && len(t.Raw) >= 2 {
+				code = uint16(t.Raw[0]&0x7f)<<8 | uint16(t.Raw[1])
+			} else {
+				code = uint16(t.Raw[0] & 0x7f)
+			}
+			return name, lrrpResponseCodeName(code)
+		}
 	case 0x34: // TIMESTAMP: first 4 bytes big-endian Unix epoch seconds. Any
 		// trailing bytes are surfaced as hex rather than dropped — the encoding
-		// of the 5th byte is not corpus-validated.
+		// of the 5th byte is not corpus-validated. sdrtrunk Timestamp.java instead
+		// reads a packed calendar bitfield (year/month/day/h/m/s), but the on-air
+		// corpus bytes decode to sane dates as a Unix epoch and to nonsense under
+		// that bitfield, so the epoch interpretation is retained deliberately.
 		if len(t.Raw) >= 4 {
 			epoch := uint32(t.Raw[0])<<24 | uint32(t.Raw[1])<<16 | uint32(t.Raw[2])<<8 | uint32(t.Raw[3])
 			val := time.Unix(int64(epoch), 0).UTC().Format("2006-01-02 15:04:05Z")
