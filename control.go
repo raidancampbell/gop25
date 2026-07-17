@@ -426,10 +426,16 @@ func parseTSBKArgs(t *TSBKData, args []uint8) {
 		t.ChannelID2 = uint16(bitsToUint32(args[32:48]))
 		t.GroupID2 = bitsToUint32(args[48:64])
 
-	case OpcodeGroupVoiceGrantUpdtExp: // svc[8] chT[16] chR[16] tg[16]
-		t.ChannelID = uint16(bitsToUint32(args[8:24]))
-		t.ChannelID2 = uint16(bitsToUint32(args[24:40]))
-		t.GroupID = bitsToUint32(args[40:56])
+	case OpcodeGroupVoiceGrantUpdtExp: // svc[8] rsvd[8] chT[16] chR[16] tg[16]
+		// TIA-102.AABC-B GRP_V_CH_GRANT_UPDT_EXP carries an 8-bit reserved octet
+		// between service options and the downlink channel. op25 trunking.py 0x03
+		// (mfrid==0): ch1=tsbk>>48, ch2=tsbk>>32, ga=tsbk>>16; sdrtrunk
+		// GroupVoiceChannelGrantUpdateExplicit RESERVED={24..31}. Skipping the
+		// reserved octet would shift every field 8 bits early -> wrong RF channel
+		// and garbage talkgroup.
+		t.ChannelID = uint16(bitsToUint32(args[16:32]))
+		t.ChannelID2 = uint16(bitsToUint32(args[32:48]))
+		t.GroupID = bitsToUint32(args[48:64])
 
 	case OpcodeUnitVoiceGrant: // ch[16] dst[24] src[24]
 		t.ChannelID = uint16(bitsToUint32(args[0:16]))

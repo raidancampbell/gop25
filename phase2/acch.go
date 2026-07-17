@@ -83,10 +83,15 @@ func decodeACCHBytes(dibits []p25.Dibit, typ ACCHType) ([]byte, bool) {
 	spec := acchSpecFor(typ)
 
 	// 1. Extract bits from the declared dibit ranges (high bit then low bit).
-	//    op25 p25p2_tdma.cc:438-466.
+	//    op25 p25p2_tdma.cc:438-466. The ranges are op25 burstp-relative
+	//    (burstp = &dibits[10], p25p2_tdma.cc:698), so add PayloadOffset to index
+	//    the absolute 180-dibit burst — matching the voice (VCW*Offset), ESS
+	//    (ESSOffset), and DUID (DUIDPos*) paths, which all add PayloadOffset too.
+	//    Without it every ACCH field reads 10 dibits early and RS+CRC fail on
+	//    real on-air bursts.
 	var bits []uint8
 	for _, r := range spec.ranges {
-		for i := r[0]; i < r[0]+r[1]; i++ {
+		for i := r[0] + PayloadOffset; i < r[0]+r[1]+PayloadOffset; i++ {
 			if i >= len(dibits) {
 				return nil, false
 			}

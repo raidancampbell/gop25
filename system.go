@@ -187,7 +187,15 @@ func (s *System) StartWithCC(cc CCHandle) {
 			"nac", s.def.NAC)
 		return
 	}
-	s.cc.SetTrunkTracker(s.tracker)
+	// Seed iden + warm channels BEFORE wiring the tracker onto the live CC pump.
+	// The seed loops below read/write s.voice and s.data (via spawn/spawnDataSeed)
+	// without holding s.mu, which the spawn contract permits only "before any
+	// concurrent access begins". SetTrunkTracker starts that concurrent access:
+	// once wired, the CC pump goroutine can fire onDiscover -> s.mu.Lock();
+	// s.voice[...] = spawn(...), racing the unlocked seed loops (a fatal
+	// concurrent map access, since SeedIden lets grantLocked resolve a grant
+	// immediately on a warm restart). Wire the tracker last so init completes
+	// single-threaded.
 	if seed := s.host.LoadIdenTable(s.def.NAC); len(seed) > 0 {
 		s.tracker.SeedIden(seed)
 	}
@@ -209,6 +217,7 @@ func (s *System) StartWithCC(cc CCHandle) {
 		}
 		s.spawnDataSeed(seed)
 	}
+	s.cc.SetTrunkTracker(s.tracker)
 }
 
 func (s *System) NAC() uint16            { return s.def.NAC }

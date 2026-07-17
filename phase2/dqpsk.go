@@ -25,6 +25,15 @@ type HDQPSKDemod struct {
 	prevMid complex64   // previous mid-symbol sample, post-rotation
 	tail    []complex64 // leftover samples carried into next Process call
 
+	// concatBuf and dibitsBuf are reusable scratch for Process, reset to len 0
+	// each call and parked (possibly grown) for the next. concatBuf holds
+	// tail||in when there is leftover tail; dibitsBuf collects the recovered
+	// dibits and is returned to the caller by reslicing. This mirrors the Phase 1
+	// symbol.go buffer-reuse pattern, avoiding the per-block heap churn that a
+	// fresh make() on every call would reintroduce on the hot TDMA demod path.
+	concatBuf []complex64
+	dibitsBuf []p25.Dibit
+
 	// PI loop filter (Gardner)
 	propGain float64
 	intGain  float64
@@ -55,17 +64,25 @@ func NewHDQPSKDemod(sampleRate float64) *HDQPSKDemod {
 
 // Process consumes complex IQ and returns recovered dibits. State carries
 // across calls — feed contiguous samples from the upstream source.
+//
+// The returned slice is backed by an internal buffer reused on the next Process
+// call; callers must consume it before calling Process again (framer.Feed does
+// so synchronously within Decoder.Process).
 func (d *HDQPSKDemod) Process(in []complex64) []p25.Dibit {
 	var buf []complex64
 	if len(d.tail) > 0 {
-		buf = make([]complex64, 0, len(d.tail)+len(in))
-		buf = append(buf, d.tail...)
-		buf = append(buf, in...)
+		need := len(d.tail) + len(in)
+		if cap(d.concatBuf) < need {
+			d.concatBuf = make([]complex64, need)
+		}
+		buf = d.concatBuf[:need]
+		copy(buf, d.tail)
+		copy(buf[len(d.tail):], in)
 	} else {
 		buf = in
 	}
 	n := len(buf)
-	out := make([]p25.Dibit, 0, int(float64(n)/d.sampPerSym)+1)
+	out := d.dibitsBuf[:0]
 
 	for {
 		onIdx := d.pos + d.sampPerSym
@@ -146,6 +163,8 @@ func (d *HDQPSKDemod) Process(in []complex64) []p25.Dibit {
 		d.tail = d.tail[:0]
 		d.pos -= float64(n)
 	}
+	// Park the (possibly grown) backing storage for the next call.
+	d.dibitsBuf = out
 	return out
 }
 
