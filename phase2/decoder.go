@@ -133,8 +133,13 @@ func (d *Decoder) processBurst(b Burst, hasMask bool, mask [SuperframeDibits]p25
 
 	// Descramble payload if mask is available and location is known.
 	if hasMask && b.ISCH.Location >= 0 {
+		// Decode the ISCH from the RAW burst, before descrambling. Descramble
+		// XORs dibits 10..179, which overlaps ISCH dibits 10..19, so reading
+		// the ISCH afterwards decodes a half-corrupted codeword. The ISCH is
+		// not scrambled on the air: it has to be readable to establish slot
+		// and location before the payload can be descrambled at all.
+		decoded := DecodeISCH(ischDibits(b.Raw))
 		b = Descramble(b, mask)
-		decoded := DecodeISCH(ischDibits(b))
 		if decoded.Valid && !decoded.IsSISCH && decoded.Location == expectedLocation {
 			b.ISCH = decoded
 			d.BurstsValid++
@@ -161,9 +166,9 @@ func (d *Decoder) processBurst(b Burst, hasMask bool, mask [SuperframeDibits]p25
 	return b, voice
 }
 
-func ischDibits(b Burst) [SyncDibits]p25.Dibit {
+func ischDibits(dibits [BurstDibits]p25.Dibit) [SyncDibits]p25.Dibit {
 	var out [SyncDibits]p25.Dibit
-	copy(out[:], b.Dibits[:SyncDibits])
+	copy(out[:], dibits[:SyncDibits])
 	return out
 }
 

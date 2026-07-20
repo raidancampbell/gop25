@@ -95,3 +95,66 @@ func cwToDibits(cw uint64) [SyncDibits]p25.Dibit {
 	}
 	return out
 }
+
+// ischCodewordForPosition returns a 40-bit I-ISCH codeword whose decoded
+// superframe position is pos, or ok=false if none exists.
+func ischCodewordForPosition(pos int) (uint64, bool) {
+	for cw, v := range ischCodewords {
+		if v < 0 {
+			continue
+		}
+		if (int(v)>>3&3)*4+(int(v)>>5&3) == pos {
+			return cw, true
+		}
+	}
+	return 0, false
+}
+
+// burstWithISCH builds a burst whose first 20 dibits carry the given 40-bit
+// ISCH codeword; the remaining payload is arbitrary but non-zero so that
+// descrambling visibly changes it.
+func burstWithISCH(cw uint64) Burst {
+	var b Burst
+	for i := 0; i < SyncDibits; i++ {
+		b.Dibits[i] = p25.Dibit((cw >> uint(38-2*i)) & 0x3)
+	}
+	for i := SyncDibits; i < BurstDibits; i++ {
+		b.Dibits[i] = p25.Dibit((i * 7) % 4)
+	}
+	return b
+}
+
+// TestProcessBurst_DecodesISCHBeforeDescrambling pins the read order: the ISCH
+// used to be decoded from the DESCRAMBLED burst. Descramble XORs dibits 10..179
+// (scramble.go), which overlaps ISCH dibits 10..19, so the mask corrupted half
+// the codeword before it was decoded.
+//
+// On real captures that held ISCH decode to 8.1% of bursts; reading it
+// pre-descramble instead yields 48.7% I-ISCH plus 48.7% S-ISCH — 97% of all
+// bursts — which is the ceiling, since I-ISCH occupies only 6 of the 12
+// superframe positions.
+func TestProcessBurst_DecodesISCHBeforeDescrambling(t *testing.T) {
+	const pos = 4
+	cw, ok := ischCodewordForPosition(pos)
+	if !ok {
+		t.Fatalf("no I-ISCH codeword decodes to position %d", pos)
+	}
+
+	d := NewDecoder(25000)
+	defer d.Close()
+	d.SetScrambleParams(374, 368, 781824)
+	d.superframePos = pos
+
+	mask := GenerateXORMask(374, 368, 781824)
+	got, _ := d.processBurst(burstWithISCH(cw), true, mask)
+
+	if !got.ISCH.Valid {
+		t.Fatalf("ISCH should decode as valid at position %d", pos)
+	}
+	if got.ISCH.Location != pos {
+		t.Errorf("ISCH location = %d, want %d", got.ISCH.Location, pos)
+	}
+	if d.BurstsValid != 1 {
+		t.Errorf("BurstsValid = %d, want 1", d.BurstsValid)
+	}
+}
