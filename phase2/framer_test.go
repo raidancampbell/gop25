@@ -76,3 +76,61 @@ func TestFramer_RejectsTooManyErrors(t *testing.T) {
 		t.Errorf("sync with 10 bit errors should be rejected; got %d bursts", len(bursts))
 	}
 }
+
+// buildBurstStream returns n consecutive 180-dibit bursts, each beginning with
+// the frame-sync pattern, plus a filler payload that is distinguishable per
+// burst so misalignment is detectable.
+func buildBurstStream(n int) []p25.Dibit {
+	sync := magicDibits()
+	var stream []p25.Dibit
+	for b := 0; b < n; b++ {
+		stream = append(stream, sync...)
+		for i := SyncDibits; i < BurstDibits; i++ {
+			stream = append(stream, p25.Dibit((b+i)%4))
+		}
+	}
+	return stream
+}
+
+// startsWithSync reports whether a burst begins with the frame-sync pattern.
+func startsWithSync(b Burst) bool {
+	var cw uint64
+	for i := 0; i < SyncDibits; i++ {
+		cw = (cw << 2) | uint64(b.Dibits[i]&3)
+	}
+	return cw&SyncMask == SyncMagic
+}
+
+// TestFramer_RecoversAlignmentAfterSlip guards against free-running. The framer
+// used to lock once and then emit a burst every 180 dibits forever, so a single
+// timing slip permanently destroyed alignment for the rest of the stream.
+//
+// On real captures that was catastrophic: the demodulator recovered 93-95% of
+// frame-sync patterns with ZERO bit errors, yet one ~65-dibit slip a couple of
+// seconds in left just 13 of 677 sync patterns landing on a burst boundary,
+// and valid bursts fell to 0.1%.
+func TestFramer_RecoversAlignmentAfterSlip(t *testing.T) {
+	const preSlip, postSlip = 3, 6
+	stream := buildBurstStream(preSlip)
+	// A slip that is not a multiple of BurstDibits: permanently shifts the
+	// free-running boundary.
+	stream = append(stream, []p25.Dibit{1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1}...)
+	stream = append(stream, buildBurstStream(postSlip)...)
+
+	f := NewFramer()
+	bursts := f.Feed(stream)
+
+	if len(bursts) < preSlip+postSlip-1 {
+		t.Fatalf("expected at least %d bursts, got %d", preSlip+postSlip-1, len(bursts))
+	}
+	misaligned := 0
+	for _, b := range bursts {
+		if !startsWithSync(b) {
+			misaligned++
+		}
+	}
+	if misaligned > 0 {
+		t.Errorf("%d/%d bursts do not start with sync: framer did not re-align after the slip",
+			misaligned, len(bursts))
+	}
+}

@@ -33,6 +33,15 @@ func (f *Framer) Feed(dibits []p25.Dibit) []Burst {
 		if f.collecting {
 			f.burst[f.burstIdx] = d
 			f.burstIdx++
+			// A sync pattern begins a burst by definition, so seeing one
+			// anywhere but the expected boundary means the dibit stream
+			// slipped. Re-align on it rather than free-running out of phase:
+			// without this a single slip is permanent for the rest of the
+			// call, however clean the demodulated dibits are.
+			if f.burstIdx != SyncDibits && syncErrors(f.accum) <= SyncErrorThreshold {
+				f.alignToSync()
+				continue
+			}
 			if f.burstIdx == BurstDibits {
 				out = append(out, Burst{Dibits: f.burst})
 				if f.tracking {
@@ -50,13 +59,7 @@ func (f *Framer) Feed(dibits []p25.Dibit) []Burst {
 		if syncErrors(f.accum) <= SyncErrorThreshold {
 			f.collecting = true
 			f.tracking = true
-			f.burstIdx = 0
-			// The 20 dibits of sync are the first 20 dibits of the burst.
-			for i := 0; i < SyncDibits; i++ {
-				shift := uint(38 - 2*i)
-				f.burst[i] = p25.Dibit((f.accum >> shift) & 0x3)
-			}
-			f.burstIdx = SyncDibits
+			f.alignToSync()
 		}
 	}
 	return out
@@ -65,4 +68,15 @@ func (f *Framer) Feed(dibits []p25.Dibit) []Burst {
 // syncErrors returns the bit-distance between candidate and SyncMagic.
 func syncErrors(candidate uint64) int {
 	return bits.OnesCount64((candidate ^ SyncMagic) & SyncMask)
+}
+
+// alignToSync starts a fresh burst at the sync pattern currently sitting in
+// accum, discarding any partially collected burst. The 20 sync dibits are the
+// first 20 dibits of the burst.
+func (f *Framer) alignToSync() {
+	for i := 0; i < SyncDibits; i++ {
+		shift := uint(38 - 2*i)
+		f.burst[i] = p25.Dibit((f.accum >> shift) & 0x3)
+	}
+	f.burstIdx = SyncDibits
 }
