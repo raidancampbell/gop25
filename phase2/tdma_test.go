@@ -66,6 +66,41 @@ func TestTDMAProcessor_2VBurst_ProducesPCM(t *testing.T) {
 	}
 }
 
+func TestTDMAProcessor_VoiceErrorsCountedOnce(t *testing.T) {
+	proc := NewTDMAProcessor()
+	defer proc.Close()
+
+	b := makeSynthetic4VBurst(0)
+	// Flip one c0 bit in VCW1 so Golay corrects a known non-zero error.
+	b.Dibits[PayloadOffset+VCW1Offset] ^= 0x2
+
+	offsets := []int{
+		PayloadOffset + VCW1Offset,
+		PayloadOffset + VCW2Offset,
+		PayloadOffset + VCW3Offset,
+		PayloadOffset + VCW4Offset,
+	}
+	wantErrs := 0
+	for _, off := range offsets {
+		result := DecodeVoiceCW(b.Dibits[off : off+VoiceCWDibits])
+		if !result.OK {
+			t.Fatalf("voice codeword at offset %d did not decode", off)
+		}
+		wantErrs += result.Errs
+	}
+	if wantErrs == 0 {
+		t.Fatal("test setup produced no correctable FEC errors")
+	}
+
+	vf := proc.ProcessBurst(b)
+	if vf == nil {
+		t.Fatal("expected non-nil P2VoiceFrame")
+	}
+	if vf.Errs != wantErrs {
+		t.Fatalf("P2VoiceFrame.Errs = %d, want decoded FEC total %d", vf.Errs, wantErrs)
+	}
+}
+
 // build2VBurstWithFACCH constructs a descrambled 2V burst whose FACCH region
 // encodes a MAC_ACTIVE (opcode 4) sub-op 0x01 Group Voice Channel User PDU with
 // the given talkgroup and source. We use sub-op 0x01 because its ga (buf[3:5])

@@ -144,7 +144,16 @@ func (d *Decoder) processBurst(b Burst, hasMask bool, mask [SuperframeDibits]p25
 			b.ISCH = decoded
 			d.BurstsValid++
 		} else if decoded.IsSISCH {
-			b.ISCH = decoded
+			// S-ISCH does not carry a location. Retain the position and slot
+			// established by the running superframe counter so the burst remains
+			// eligible for descrambling and TDMA voice/control processing.
+			b.ISCH = ISCHInfo{
+				Location: expectedLocation,
+				Slot:     WhichSlot[expectedLocation],
+				IsSISCH:  true,
+				Valid:    true,
+			}
+			d.BurstsValid++
 		} else {
 			b.ISCH = ISCHInfo{Location: -1, Slot: -1}
 		}

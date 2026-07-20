@@ -51,6 +51,33 @@ func readComplex64IQ(t *testing.T, path string) []complex64 {
 	return out
 }
 
+func TestDecoder_SISCHKeepsExpectedLocationAndSlot(t *testing.T) {
+	var sischCodeword uint64
+	for cw, value := range ischCodewords {
+		if value == -2 {
+			sischCodeword = cw
+			break
+		}
+	}
+	if sischCodeword == 0 {
+		t.Fatal("S-ISCH codeword not found")
+	}
+
+	dec := NewDecoder(25000)
+	dec.superframePos = 2 // S-ISCH position, slot 0.
+	var burst Burst
+	isch := cwToDibits(sischCodeword)
+	copy(burst.Dibits[:SyncDibits], isch[:])
+
+	got, _ := dec.processBurst(burst, true, [SuperframeDibits]p25.Dibit{})
+	if !got.ISCH.Valid || !got.ISCH.IsSISCH {
+		t.Fatalf("S-ISCH validity lost: %+v", got.ISCH)
+	}
+	if got.ISCH.Location != 2 || got.ISCH.Slot != 0 {
+		t.Fatalf("S-ISCH location/slot = %d/%d, want 2/0", got.ISCH.Location, got.ISCH.Slot)
+	}
+}
+
 func TestDecoder_Reset_ClearsState(t *testing.T) {
 	dec := NewDecoder(25000)
 	// Set scramble params before reset — they should survive.

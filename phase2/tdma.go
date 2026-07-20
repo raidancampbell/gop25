@@ -218,8 +218,8 @@ func (t *TDMAProcessor) ProcessBurst(b Burst) *P2VoiceFrame {
 			}
 
 			ambeD := PackAMBE(result.U)
-			samples, errs := voc.Decode(ambeD, result.Errs)
-			totalErrs += errs
+			// Decode returns fecErrs unchanged; result.Errs was counted above.
+			samples, _ := voc.Decode(ambeD, result.Errs)
 			pcm = append(pcm, samples[:]...)
 		} else {
 			// FEC failed — emit silence to keep timing and advance vocoder state.
