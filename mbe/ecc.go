@@ -71,8 +71,15 @@ var hammingGenerator = [4]int{
 	0x7f08, 0x78e4, 0x66d2, 0x55b1,
 }
 
+// hammingMatrix maps a 4-bit syndrome to the single-bit error mask to XOR into
+// the 15-bit codeword. The syndrome does NOT trivially equal the error position
+// for this (hammingGenerator) parity check, so this is a permutation, not the
+// identity map 1<<(s-1): single-bit errors at codeword positions {2..7} produce
+// syndromes {4,8,3,5,6,7}, so those slots differ from a naive identity table.
+// Derived from the Hamming1511 syndrome routine above (each position p in
+// [0,14] -> syndrome s, table[s] = 1<<p); mirrors op25 op25_hamming.h decoding[].
 var hammingMatrix = [16]int{
-	0x0, 0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000,
+	0x0, 0x1, 0x2, 0x10, 0x4, 0x20, 0x40, 0x80, 0x8, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000,
 }
 
 var golayGenerator = [12]int{

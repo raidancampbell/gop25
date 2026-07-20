@@ -139,6 +139,37 @@ func TestDecodeACCH_MacActive_GroupVoiceUser(t *testing.T) {
 	}
 }
 
+// TestACCHAbsoluteGeometry anchors the ACCH read window to op25's absolute burst
+// geometry, independent of the synthACCHBurst round-trip (which only proves the
+// encoder and decoder agree, not that either matches on-air). op25 passes
+// burstp = &dibits[10] to handle_acch_frame and reads from burstp[11/48/100/133]
+// (p25p2_tdma.cc:698,438-466), i.e. ABSOLUTE burst dibits 21/58/110/143. The Go
+// decoder applies spec.ranges + PayloadOffset, so those must equal op25's
+// absolute indices — the same convention the voice (VCW*Offset) and ESS
+// (ESSOffset) paths already use. A regression here (dropping PayloadOffset)
+// reads every ACCH field 10 dibits early and silently fails RS+CRC on-air.
+func TestACCHAbsoluteGeometry(t *testing.T) {
+	if PayloadOffset != 10 {
+		t.Fatalf("PayloadOffset = %d, want 10 (op25 burstp = &dibits[10])", PayloadOffset)
+	}
+	// op25 absolute dibit indices for the FACCH read ranges (burstp-relative +10).
+	wantFacch := []int{21, 58, 110, 143}
+	got := acchSpecFor(ACCHFacch).ranges
+	for i, r := range got {
+		if abs := r[0] + PayloadOffset; abs != wantFacch[i] {
+			t.Errorf("FACCH range %d absolute start = %d, want %d (op25 burstp[%d]+10)",
+				i, abs, wantFacch[i], r[0])
+		}
+	}
+	// SACCH/LCCH share {11,48,133} -> absolute {21,58,143}.
+	wantSacch := []int{21, 58, 143}
+	for i, r := range acchSpecFor(ACCHSacch).ranges {
+		if abs := r[0] + PayloadOffset; abs != wantSacch[i] {
+			t.Errorf("SACCH range %d absolute start = %d, want %d", i, abs, wantSacch[i])
+		}
+	}
+}
+
 // Round-trip: appending the computed CRC-12 to a data bit slice must verify.
 func TestCRC12_RoundTrip(t *testing.T) {
 	data := []uint8{1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 0, 1, 1}
@@ -265,6 +296,35 @@ func TestMACWalker_ReachesIdentityAfterLeadingSubMsg(t *testing.T) {
 	}
 }
 
+// A vendor sub-message (b1b2==2) whose inline length byte is 0 must resolve its
+// length from macMsgLenTable and let the walk continue, not abort it. op25
+// decode_mac_msg falls back to mac_msg_len[op] in exactly this case
+// (p25p2_tdma.cc:355-361). Before the fallback, the walker hit its msgLen==0
+// guard and silently dropped every later sub-message -- including the trailing
+// Group Voice Channel User identity asserted here.
+func TestWalkMACSubMessages_VendorZeroLenFallback(t *testing.T) {
+	// Leading vendor sub-message: op=0x80 (b1b2==2, macMsgLenTable[0x80]=8),
+	// mfid@+1, length byte@+2 = 0 -> must fall back to table length 8.
+	// Trailing sub-message at byte 9: op=0x01 Group Voice Channel User.
+	buf := make([]byte, 16)
+	buf[0] = 4 << 5 // MAC_ACTIVE opcode in bits 7:5
+	buf[1] = 0x80   // vendor sub-opcode (b1b2==2), table length 8
+	buf[2] = 0x90   // mfid
+	buf[3] = 0x00   // length field NOT set -> exercises the table fallback
+	// buf[4..8] remain zero (rest of the 8-byte vendor message body).
+	buf[9] = 0x01                                // Group Voice Channel User
+	buf[10] = 0x00                               // service opts
+	buf[11], buf[12] = 0x04, 0xD2                // ga = 1234
+	buf[13], buf[14], buf[15] = 0x00, 0x12, 0x34 // sa = 0x1234
+
+	p := &MACPDU{Opcode: 4, Bytes: buf}
+	walkMACSubMessages(p)
+	if !p.HasIdentity || p.Talkgroup != 1234 || p.SourceID != 0x1234 {
+		t.Fatalf("walker aborted at zero-length vendor sub-message: HasIdentity=%v tg=%d src=%#x",
+			p.HasIdentity, p.Talkgroup, p.SourceID)
+	}
+}
+
 func TestDecodeACCHBytes_LCCH_RoundTrip(t *testing.T) {
 	// LCCH: SACCH RS layout, 180-bit body, CRC-16, 23-byte output.
 	// Build a 164-bit data field + 16-bit CRC-16 = 180 bits, pack to hexbits at
@@ -357,7 +417,9 @@ func synthACCHBurst(t *testing.T, bodyBits []uint8, typ ACCHType) [BurstDibits]p
 	var burst [BurstDibits]p25.Dibit
 	bi := 0
 	for _, r := range spec.ranges {
-		for i := r[0]; i < r[0]+r[1]; i++ {
+		// Ranges are op25 burstp-relative; the burst is absolute, so write at
+		// r[0]+PayloadOffset — the same offset decodeACCHBytes now reads from.
+		for i := r[0] + PayloadOffset; i < r[0]+r[1]+PayloadOffset; i++ {
 			hbBit := bits[bi]
 			loBit := bits[bi+1]
 			burst[i] = p25.Dibit(hbBit<<1 | loBit)

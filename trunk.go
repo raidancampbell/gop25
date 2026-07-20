@@ -386,6 +386,15 @@ func (t *TrunkTracker) Apply(tsbk *TSBKData) *Discovery {
 		t.fire(d)
 		return d
 
+	case OpcodeTeleIntVoiceGrant:
+		// 0x08 TELE_INT_CH_GRANT: a call bridged to the phone network. No
+		// talkgroup; follow like a unit grant so the voice pipeline tunes the
+		// assigned channel. DestID is the on-system party; there is no source.
+		d := t.unitGrantLocked(tsbk.ChannelID, tsbk.DestID, 0)
+		t.mu.Unlock()
+		t.fire(d)
+		return d
+
 	case OpcodeGroupDataGrant:
 		// 0x14 SNDCP_DATA_CH_GRANT: svc[8] ch[16] dac[16] src[24].
 		// Resolve the channel via the iden table; do nothing if not yet seeded.

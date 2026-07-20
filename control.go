@@ -57,7 +57,12 @@ const (
 	OpcodeGroupVoiceGrantUpdate  TSBKOpcode = 0x02
 	OpcodeGroupVoiceGrantUpdtExp TSBKOpcode = 0x03
 	OpcodeUnitVoiceGrant         TSBKOpcode = 0x04
-	OpcodeGroupDataGrant         TSBKOpcode = 0x14
+	// TELE_INT_CH_GRANT / TELE_INT_CH_GRANT_UPDT (TIA-102.AABC standard opcodes).
+	// These are STANDARD-MFID opcodes; 0x09 does NOT collide with the Motorola
+	// OpcodeMotLoadPct=0x09 because vendor opcodes dispatch only under MFID 0x90.
+	OpcodeTeleIntVoiceGrant       TSBKOpcode = 0x08
+	OpcodeTeleIntVoiceGrantUpdate TSBKOpcode = 0x09
+	OpcodeGroupDataGrant          TSBKOpcode = 0x14
 	OpcodeSNDCPDataPageReq       TSBKOpcode = 0x15
 	OpcodeSNDCPDataChAnn         TSBKOpcode = 0x16
 	OpcodeAckRspFNE              TSBKOpcode = 0x20
@@ -421,15 +426,27 @@ func parseTSBKArgs(t *TSBKData, args []uint8) {
 		t.ChannelID2 = uint16(bitsToUint32(args[32:48]))
 		t.GroupID2 = bitsToUint32(args[48:64])
 
-	case OpcodeGroupVoiceGrantUpdtExp: // svc[8] chT[16] chR[16] tg[16]
-		t.ChannelID = uint16(bitsToUint32(args[8:24]))
-		t.ChannelID2 = uint16(bitsToUint32(args[24:40]))
-		t.GroupID = bitsToUint32(args[40:56])
+	case OpcodeGroupVoiceGrantUpdtExp: // svc[8] rsvd[8] chT[16] chR[16] tg[16]
+		// TIA-102.AABC-B GRP_V_CH_GRANT_UPDT_EXP carries an 8-bit reserved octet
+		// between service options and the downlink channel. op25 trunking.py 0x03
+		// (mfrid==0): ch1=tsbk>>48, ch2=tsbk>>32, ga=tsbk>>16; sdrtrunk
+		// GroupVoiceChannelGrantUpdateExplicit RESERVED={24..31}. Skipping the
+		// reserved octet would shift every field 8 bits early -> wrong RF channel
+		// and garbage talkgroup.
+		t.ChannelID = uint16(bitsToUint32(args[16:32]))
+		t.ChannelID2 = uint16(bitsToUint32(args[32:48]))
+		t.GroupID = bitsToUint32(args[48:64])
 
 	case OpcodeUnitVoiceGrant: // ch[16] dst[24] src[24]
 		t.ChannelID = uint16(bitsToUint32(args[0:16]))
 		t.DestID = bitsToUint32(args[16:40])
 		t.SourceID = bitsToUint32(args[40:64])
+
+	case OpcodeTeleIntVoiceGrant: // svc[8] ch[16] callTimer[16] tgt[24]
+		// Telephone interconnect: the call timer replaces the source field of
+		// a group grant; the granted party is the target RID (DestID).
+		t.ChannelID = uint16(bitsToUint32(args[8:24]))
+		t.DestID = bitsToUint32(args[40:64])
 
 	case OpcodeAckRspFNE: // aiv(1) ex(1) rsvd(6) svc(8) tgt(24) src(24)
 		t.DestID = bitsToUint32(args[16:40])
@@ -593,7 +610,7 @@ func HandledTSBK(mfid uint8, op TSBKOpcode) bool {
 	}
 	switch op {
 	case OpcodeGroupVoiceGrant, OpcodeGroupVoiceGrantUpdate,
-		OpcodeGroupVoiceGrantUpdtExp, OpcodeUnitVoiceGrant,
+		OpcodeGroupVoiceGrantUpdtExp, OpcodeUnitVoiceGrant, OpcodeTeleIntVoiceGrant,
 		OpcodeGroupDataGrant, OpcodeSNDCPDataPageReq, OpcodeSNDCPDataChAnn,
 		OpcodeAckRspFNE, OpcodeGrpAffRsp, OpcodeSCCBExp,
 		OpcodeGroupAffQuery, OpcodeLocRegResp, OpcodeUnitRegResp, OpcodeUnitDeRegAck,
@@ -639,6 +656,10 @@ func OpcodeName(mfid uint8, op TSBKOpcode) string {
 		return "GRP_V_CH_GRANT_UPDT_EXP"
 	case OpcodeUnitVoiceGrant:
 		return "UU_V_CH_GRANT"
+	case OpcodeTeleIntVoiceGrant:
+		return "TELE_INT_CH_GRANT"
+	case OpcodeTeleIntVoiceGrantUpdate:
+		return "TELE_INT_CH_GRANT_UPDT"
 	case OpcodeGroupDataGrant:
 		return "SNDCP_DATA_CH_GRANT"
 	case OpcodeSNDCPDataPageReq:

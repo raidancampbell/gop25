@@ -210,6 +210,43 @@ func TestAliasAssembler_Harris(t *testing.T) {
 	}
 }
 
+// TestAliasAssembler_HarrisThreeBlocks verifies an alias spanning blocks 1-3 is
+// NOT truncated at block 2. Regression guard: latching harrisComplete after only
+// blocks 1+2 dropped blocks 3-4, so "BATTALION CHIEF" (3 blocks) emitted as
+// "BATTALION CHIE". The assembler must re-emit a richer alias as block 3 arrives.
+func TestAliasAssembler_HarrisThreeBlocks(t *testing.T) {
+	// "BATTALI" | "ON CHIE" | "F      " -> "BATTALION CHIEF".
+	lcw1 := [9]byte{0x32, 0xA4, 'B', 'A', 'T', 'T', 'A', 'L', 'I'} // LCO 50
+	lcw2 := [9]byte{0x33, 0xA4, 'O', 'N', ' ', 'C', 'H', 'I', 'E'} // LCO 51
+	lcw3 := [9]byte{0x34, 0xA4, 'F', ' ', ' ', ' ', ' ', ' ', ' '} // LCO 52
+
+	var a aliasAssembler
+
+	if _, _, _, complete := a.addHarris(lcw1); complete {
+		t.Fatalf("block 1 must not complete")
+	}
+	// Block 2 emits the (partial) alias but must NOT latch — block 3 can follow.
+	alias2, _, _, complete2 := a.addHarris(lcw2)
+	if !complete2 {
+		t.Fatalf("block 2 must emit")
+	}
+	if alias2 != "BATTALION CHIE" {
+		t.Errorf("block 2 alias = %q, want partial %q", alias2, "BATTALION CHIE")
+	}
+	// Block 3 must re-emit the now-complete alias, NOT be dropped by a latch.
+	alias3, _, _, complete3 := a.addHarris(lcw3)
+	if !complete3 {
+		t.Fatalf("block 3 must re-emit the enriched alias, got complete=false (truncation bug)")
+	}
+	if alias3 != "BATTALION CHIEF" {
+		t.Errorf("block 3 alias = %q, want %q", alias3, "BATTALION CHIEF")
+	}
+	// A duplicate block 3 must not re-emit (dedup on block position).
+	if _, _, _, complete := a.addHarris(lcw3); complete {
+		t.Errorf("re-feed block 3: want complete=false (dedup)")
+	}
+}
+
 func TestAddHarrisGPSBlock_TwoBlocks(t *testing.T) {
 	// Build a known 112-bit Harris GPS field, then split it across two LCWs:
 	// block 1 (LCO=42) carries field bits[0:56] in its bytes 2-8, block 2

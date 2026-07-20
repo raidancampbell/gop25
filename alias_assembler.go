@@ -130,9 +130,16 @@ func (a *aliasAssembler) addMotorolaBlock(lcw [9]byte) (string, uint16, uint32, 
 }
 
 // addHarris stores the 56-bit payload (bytes 2-8) by block position (LCO-50).
-// Assembles via harrisAliasString once blocks 0 AND 1 are present (blocks 2,3
-// optional). Returns (alias, 0, unit, true) on completion. Harris has no sequence
-// number or talkgroup in the LC word; unit is always 0.
+// Assembles via HarrisAliasString once blocks 0 AND 1 are present, then RE-EMITS
+// a progressively richer alias as later blocks (2, 3) arrive, mirroring
+// sdrtrunk LCHarrisTalkerAliasComplete (which re-assembles on every block 1-4).
+// Returns (alias, 0, unit, true) each time a NEW block advances the alias.
+// Harris has no sequence number or talkgroup in the LC word; unit is always 0.
+//
+// Blocks arrive in order 1,2,3,4, so latching after only blocks 1+2 (as an
+// earlier version did) truncated any alias spanning blocks 3-4. Instead we
+// dedup on block position (a re-fed block does not re-emit) and latch the whole
+// alias only once block 4 (pos 3, LCO 53) has been folded in.
 func (a *aliasAssembler) addHarris(lcw [9]byte) (string, uint16, uint32, bool) {
 	if a.harrisComplete {
 		return "", 0, 0, false
@@ -142,6 +149,12 @@ func (a *aliasAssembler) addHarris(lcw [9]byte) (string, uint16, uint32, bool) {
 	pos := lco - 50
 	if pos < 0 || pos >= 4 {
 		// Invalid LCO for Harris alias.
+		return "", 0, 0, false
+	}
+
+	// Dedup: a re-transmitted block already folded in does not re-emit. Only a
+	// newly-seen block position advances (and re-emits) the alias.
+	if a.harrisBlocks[pos] != nil {
 		return "", 0, 0, false
 	}
 
@@ -159,7 +172,12 @@ func (a *aliasAssembler) addHarris(lcw [9]byte) (string, uint16, uint32, bool) {
 	blocks := [][]byte{a.harrisBlocks[0], a.harrisBlocks[1], a.harrisBlocks[2], a.harrisBlocks[3]}
 	alias := HarrisAliasString(blocks)
 
-	a.harrisComplete = true
+	// Latch only after the final block (pos 3 = LCO 53) has been incorporated,
+	// so blocks 3-4 are not dropped. Downstream last-write-wins converges to the
+	// complete alias across the progressive emissions.
+	if a.harrisBlocks[3] != nil {
+		a.harrisComplete = true
+	}
 	return alias, 0, 0, true
 }
 

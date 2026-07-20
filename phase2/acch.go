@@ -83,10 +83,15 @@ func decodeACCHBytes(dibits []p25.Dibit, typ ACCHType) ([]byte, bool) {
 	spec := acchSpecFor(typ)
 
 	// 1. Extract bits from the declared dibit ranges (high bit then low bit).
-	//    op25 p25p2_tdma.cc:438-466.
+	//    op25 p25p2_tdma.cc:438-466. The ranges are op25 burstp-relative
+	//    (burstp = &dibits[10], p25p2_tdma.cc:698), so add PayloadOffset to index
+	//    the absolute 180-dibit burst — matching the voice (VCW*Offset), ESS
+	//    (ESSOffset), and DUID (DUIDPos*) paths, which all add PayloadOffset too.
+	//    Without it every ACCH field reads 10 dibits early and RS+CRC fail on
+	//    real on-air bursts.
 	var bits []uint8
 	for _, r := range spec.ranges {
-		for i := r[0]; i < r[0]+r[1]; i++ {
+		for i := r[0] + PayloadOffset; i < r[0]+r[1]+PayloadOffset; i++ {
 			if i >= len(dibits) {
 				return nil, false
 			}
@@ -317,7 +322,15 @@ walkerLoop:
 				} else {
 					break walkerLoop
 				}
-			} else {
+			}
+			// Table fallback: the vendor length field is not always populated
+			// (op25 decode_mac_msg p25p2_tdma.cc:355-361 does the same
+			// `if (msg_len == 0) msg_len = mac_msg_len[op]` after the vendor
+			// read). Without this, a zero-length vendor sub-message hits the
+			// msgLen==0 guard below and aborts the whole walk, silently dropping
+			// every later sub-message in the PDU (e.g. a trailing 0x01 Group
+			// Voice Channel User identity or 0x91/0x95/0xA8 alias fragment).
+			if msgLen == 0 {
 				msgLen = int(macMsgLenTable[op])
 			}
 		}

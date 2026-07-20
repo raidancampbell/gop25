@@ -496,3 +496,31 @@ func TestApply_UnitVoiceGrant_FiresDiscovery(t *testing.T) {
 		t.Errorf("onDiscover fired %d times, want 1", len(got))
 	}
 }
+
+func TestApply_TelephoneInterconnectGrant_FiresDiscovery(t *testing.T) {
+	var got []Discovery
+	tr := NewTrunkTracker(0x171, func(d Discovery) { got = append(got, d) }, nil)
+	// Seed an iden so ChannelID resolves to a frequency.
+	tr.SeedIden(map[uint8]IdenEntry{
+		1: {BaseHz: 851_000_000, StepHz: 12_500, TxOffsetHz: 0, BandwidthHz: 12_500, TDMASlots: 0},
+	})
+	// ChannelID = iden(1)<<12 | chan(2) = 0x1002 -> 851.0 MHz + 2*12.5k = 851.025 MHz
+	tsbk := &TSBKData{
+		Opcode:    OpcodeTeleIntVoiceGrant,
+		ChannelID: 0x1002,
+		DestID:    0x00ABCD,
+	}
+	d := tr.Apply(tsbk)
+	if d == nil {
+		t.Fatal("Apply returned nil for telephone interconnect grant")
+	}
+	if d.FreqHz != 851_025_000 {
+		t.Errorf("FreqHz = %d, want 851025000", d.FreqHz)
+	}
+	if d.DestID != 0x00ABCD {
+		t.Errorf("DestID = %#x, want 0xABCD", d.DestID)
+	}
+	if len(got) != 1 {
+		t.Errorf("onDiscover fired %d times, want 1", len(got))
+	}
+}

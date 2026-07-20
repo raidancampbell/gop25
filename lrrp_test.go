@@ -252,6 +252,87 @@ func TestLRRPData_Heading(t *testing.T) {
 	}
 }
 
+// CIRCLE_2D (0x51) is a POINT_2D plus a 16-bit radius. Position() must surface
+// the embedded fix (pre-fix it returned ok=false for a circle-only packet), and
+// Circle() must return the radius.
+func TestLRRPData_Circle2D(t *testing.T) {
+	point := point2dPayload(37.5, -80.0) // 8 bytes
+	// radius 15.00 m -> raw 1500 = 0x05DC (×0.01).
+	body := append(point, 0x05, 0xDC) // 10-byte fixed CIRCLE_2D payload
+	pkt := append([]byte{0x0D, byte(1 + len(body)), 0x51}, body...)
+	lrrp := parseLRRP(pkt)
+	if lrrp == nil {
+		t.Fatal("parseLRRP returned nil")
+	}
+	lat, lon, alt, ok := lrrp.Position()
+	if !ok {
+		t.Fatal("Position() ok=false for a CIRCLE_2D token")
+	}
+	if alt != 0 {
+		t.Errorf("alt = %f, want 0 for CIRCLE_2D", alt)
+	}
+	if math.Abs(lat-37.5) > 0.0001 || math.Abs(lon-(-80.0)) > 0.0001 {
+		t.Errorf("lat/lon = %f/%f, want ~37.5/-80.0", lat, lon)
+	}
+	r, ok := lrrp.Circle()
+	if !ok || math.Abs(r-15.0) > 0.001 {
+		t.Errorf("Circle() = (%f, %v), want (15.0, true)", r, ok)
+	}
+	if _, val := (LRRPToken{ID: 0x51, Raw: body}).Describe(); !strings.Contains(val, "r 15.0m") {
+		t.Errorf("Describe val = %q, want a radius", val)
+	}
+}
+
+// CIRCLE_3D (0x55) adds a 16-bit altitude (Raw[10:12]) after the radius.
+func TestLRRPData_Circle3D(t *testing.T) {
+	point := point2dPayload(37.5, -80.0) // 8 bytes
+	// radius 15.00 m (0x05DC), altitude 100.00 m -> raw 10000 = 0x2710,
+	// alt-accuracy 0x0000, then one pad byte (fixed length 15).
+	body := append(point, 0x05, 0xDC, 0x27, 0x10, 0x00, 0x00, 0x00) // 15 bytes
+	pkt := append([]byte{0x0D, byte(1 + len(body)), 0x55}, body...)
+	lrrp := parseLRRP(pkt)
+	if lrrp == nil {
+		t.Fatal("parseLRRP returned nil")
+	}
+	lat, lon, alt, ok := lrrp.Position()
+	if !ok {
+		t.Fatal("Position() ok=false for a CIRCLE_3D token")
+	}
+	if math.Abs(lat-37.5) > 0.0001 || math.Abs(lon-(-80.0)) > 0.0001 {
+		t.Errorf("lat/lon = %f/%f, want ~37.5/-80.0", lat, lon)
+	}
+	if math.Abs(alt-100.0) > 0.001 {
+		t.Errorf("alt = %f, want 100.0", alt)
+	}
+	if r, ok := lrrp.Circle(); !ok || math.Abs(r-15.0) > 0.001 {
+		t.Errorf("Circle() = (%f, %v), want (15.0, true)", r, ok)
+	}
+}
+
+// RESPONSE (0x37): Raw[0] bit 7 selects short (7-bit) vs extended (15-bit) code.
+func TestLRRPData_Response(t *testing.T) {
+	// Short form: code 0x10 (NO GPS), bit 7 clear.
+	shortPkt := []byte{0x0D, 0x02, 0x37, 0x10}
+	if lrrp := parseLRRP(shortPkt); lrrp == nil {
+		t.Fatal("parseLRRP returned nil (short)")
+	} else if code, label, ok := lrrp.Response(); !ok || code != 0x10 || label != "NO GPS" {
+		t.Errorf("Response() = (%#x, %q, %v), want (0x10, NO GPS, true)", code, label, ok)
+	}
+
+	// Extended form: code 0x200 (GPS INITIALIZING). 15-bit split -> Raw={0x82,0x00}.
+	extPkt := []byte{0x0D, 0x03, 0x37, 0x82, 0x00}
+	if lrrp := parseLRRP(extPkt); lrrp == nil {
+		t.Fatal("parseLRRP returned nil (ext)")
+	} else if code, label, ok := lrrp.Response(); !ok || code != 0x200 || label != "GPS INITIALIZING" {
+		t.Errorf("Response() = (%#x, %q, %v), want (0x200, GPS INITIALIZING, true)", code, label, ok)
+	}
+
+	// Describe no longer hex-dumps the RESPONSE payload.
+	if _, val := (LRRPToken{ID: 0x37, Raw: []byte{0x10}}).Describe(); val != "NO GPS" {
+		t.Errorf("Describe val = %q, want \"NO GPS\"", val)
+	}
+}
+
 func TestLRRPData_NoToken(t *testing.T) {
 	pkt := []byte{0x0D, 0x00}
 	lrrp := parseLRRP(pkt)
