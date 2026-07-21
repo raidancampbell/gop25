@@ -879,3 +879,57 @@ func buildMACActiveGroupVoiceBody(t *testing.T, tg uint16, src uint32) []uint8 {
 	}
 	return bits
 }
+
+func TestTDMAProcessor_UncorrectableAndTotalCounted(t *testing.T) {
+	proc := NewTDMAProcessor()
+	defer proc.Close()
+
+	// Clean 4V burst (u=[0,0,0,0] in every VCW) => baseline Uncorrectable == 0.
+	b := makeSynthetic4VBurst(0)
+
+	// Corrupt VCW1's c0 with a weight-4 error, which extended Golay(24,12,8)
+	// cannot correct (t=3) but MUST detect. Rebuild that VCW's 36 dibits from
+	// the corrupted c0 using the same interleave the encoder uses, so only c0
+	// changes and c1/c2/c3 stay valid.
+	c0Clean := (golayEncode23(0) << 1) | parityBit(golayEncode23(0))
+	c0Bad := c0Clean ^ 0b1111 // flip 4 low bits => weight-4, guaranteed uncorrectable
+	m1 := generatePRMask(0)
+	badVCW := interleaveVCW(c0Bad, golayEncode23(0)^m1, 0, 0)
+	base := PayloadOffset + VCW1Offset
+	for i := 0; i < VoiceCWDibits; i++ {
+		b.Dibits[base+i] = badVCW[i]
+	}
+
+	// Guard: confirm the corruption really produced a detected-uncorrectable c0
+	// (and only one). If a future change alters the detector, this fails loudly.
+	offsets := []int{
+		PayloadOffset + VCW1Offset, PayloadOffset + VCW2Offset,
+		PayloadOffset + VCW3Offset, PayloadOffset + VCW4Offset,
+	}
+	wantUncorr, wantTotal := 0, 0
+	for _, off := range offsets {
+		wantTotal++
+		if DecodeVoiceCW(b.Dibits[off : off+VoiceCWDibits]).C0Uncorrectable {
+			wantUncorr++
+		}
+	}
+	if wantUncorr != 1 {
+		t.Fatalf("test setup produced %d uncorrectable c0 (want exactly 1)", wantUncorr)
+	}
+
+	vf := proc.ProcessBurst(b)
+	if vf == nil {
+		t.Fatal("expected non-nil P2VoiceFrame")
+	}
+	if vf.Total != wantTotal {
+		t.Errorf("Total = %d, want %d", vf.Total, wantTotal)
+	}
+	if vf.Uncorrectable != wantUncorr {
+		t.Errorf("Uncorrectable = %d, want %d", vf.Uncorrectable, wantUncorr)
+	}
+	// OK/Errs/audio unchanged: an uncorrectable-but-miscorrected c0 still decodes
+	// (perfect code), so PCM length is unaffected by this metric.
+	if len(vf.PCM) != wantTotal*160 {
+		t.Errorf("PCM len = %d, want %d (audio must be metric-independent)", len(vf.PCM), wantTotal*160)
+	}
+}

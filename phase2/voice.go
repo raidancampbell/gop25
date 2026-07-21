@@ -9,9 +9,10 @@ const VoiceCWDibits = 36
 
 // VoiceCWResult holds the decoded AMBE+2 parameters from one voice codeword.
 type VoiceCWResult struct {
-	U    [4]uint16 // u[0..3]: 12+12+11+14 = 49 bits of AMBE+2 parameters
-	Errs int       // total FEC errors (c0 + c1)
-	OK   bool      // true if both Golay decodes succeeded
+	U               [4]uint16 // u[0..3]: 12+12+11+14 = 49 bits of AMBE+2 parameters
+	Errs            int       // total FEC errors (c0 + c1)
+	OK              bool      // true if both Golay decodes succeeded
+	C0Uncorrectable bool      // c0 extended-Golay detected a weight->=4 (uncorrectable) error
 }
 
 // vcwDeinterleave maps each of the 72 bit positions (from 36 dibits expanded
@@ -100,18 +101,19 @@ func DecodeVoiceCW(dibits []p25.Dibit) VoiceCWResult {
 	}
 
 	c0, c1, c2, c3 := extractVCW(dibits)
+	c0Uncorr := p25.Golay24DetectUncorrectable(c0)
 
 	// c0: Golay(24,12,8) — strip parity bit (LSB), decode as Golay(23,12).
 	u0, errs0, ok0 := p25.Golay24Decode(c0)
 	if !ok0 {
-		return VoiceCWResult{Errs: errs0}
+		return VoiceCWResult{Errs: errs0, C0Uncorrectable: c0Uncorr}
 	}
 
 	// Generate PR mask from u0 and XOR with c1 before Golay(23,12) decode.
 	m1 := generatePRMask(u0)
 	u1, errs1, ok1 := p25.GolayDecode(c1 ^ m1)
 	if !ok1 {
-		return VoiceCWResult{U: [4]uint16{u0}, Errs: errs0 + errs1}
+		return VoiceCWResult{U: [4]uint16{u0}, Errs: errs0 + errs1, C0Uncorrectable: c0Uncorr}
 	}
 
 	// c2 and c3 are uncoded — pass through directly.
@@ -119,9 +121,10 @@ func DecodeVoiceCW(dibits []p25.Dibit) VoiceCWResult {
 	u3 := uint16(c3) // 14 bits
 
 	return VoiceCWResult{
-		U:    [4]uint16{u0, u1, u2, u3},
-		Errs: errs0 + errs1,
-		OK:   true,
+		U:               [4]uint16{u0, u1, u2, u3},
+		Errs:            errs0 + errs1,
+		OK:              true,
+		C0Uncorrectable: c0Uncorr,
 	}
 }
 

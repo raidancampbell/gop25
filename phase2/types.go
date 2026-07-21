@@ -49,6 +49,18 @@ type P2VoiceFrame struct {
 	Slot int       // 0 or 1 — which TDMA slot this came from
 	Errs int       // total FEC errors summed across all voice codewords
 
+	// Total is the number of voice codewords processed in this frame (4 for a
+	// 4V burst, 2 for a 2V burst). Uncorrectable is how many of those had a
+	// DETECTED uncorrectable c0 (extended Golay(24,12,8) weight->=4 error, via
+	// Golay24DetectUncorrectable). Because Golay(23,12) is a perfect code the
+	// decoder never self-reports failure; this detection uses the overall-parity
+	// bit the (23,12) path discards, so Uncorrectable/Total is a real c0
+	// decode-failure signal (Errs only sums CORRECTED bits and is biased low by
+	// miscorrected words). Both are 0 for ControlOnly frames. Metric-only:
+	// audio emission is unaffected.
+	Total         int
+	Uncorrectable int
+
 	// ControlOnly is true for frames decoded from a voice-less control burst
 	// (SACCH/FACCH/LCCH). PCM is nil for these; they carry MAC identity / alias /
 	// encryption and a MACOpcode for the pipeline lifecycle layer.

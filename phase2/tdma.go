@@ -193,6 +193,8 @@ func (t *TDMAProcessor) ProcessBurst(b Burst) *P2VoiceFrame {
 
 	pcm := make([]float32, 0, len(offsets)*160)
 	totalErrs := 0
+	totalCW := 0
+	uncorrectable := 0
 	decrypted := false
 
 	// Snapshot key lookup (thread-safe field).
@@ -207,6 +209,10 @@ func (t *TDMAProcessor) ProcessBurst(b Burst) *P2VoiceFrame {
 		vcwDibits := b.Dibits[off : off+VoiceCWDibits]
 		result := DecodeVoiceCW(vcwDibits)
 		totalErrs += result.Errs
+		totalCW++ // count every processed codeword
+		if result.C0Uncorrectable {
+			uncorrectable++ // c0 had a detected weight->=4 error
+		}
 
 		if result.OK {
 			// ADP decryption: XOR packed codeword with keystream.
@@ -245,10 +251,12 @@ func (t *TDMAProcessor) ProcessBurst(b Burst) *P2VoiceFrame {
 	}
 
 	return &P2VoiceFrame{
-		PCM:       pcm,
-		Slot:      slot,
-		Errs:      totalErrs,
-		AlgID:     ss.ess.AlgID,
+		PCM:           pcm,
+		Slot:          slot,
+		Errs:          totalErrs,
+		Total:         totalCW,
+		Uncorrectable: uncorrectable,
+		AlgID:         ss.ess.AlgID,
 		KeyID:     ss.ess.KeyID,
 		MI:        ss.ess.MI,
 		Encrypted: ss.ess.Encrypted(),
