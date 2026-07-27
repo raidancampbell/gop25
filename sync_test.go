@@ -718,7 +718,7 @@ func TestExtractVoiceCW_PositionContinuity(t *testing.T) {
 	}
 }
 
-// TestPayloadLen_OnAirFrameLengths verifies that payloadLen matches the
+// TestPayloadLen_OnAirFrameCaps verifies that payloadLen matches the
 // frame lengths actually transmitted by P25 Phase 1 systems (TIA-102.BAAA-A
 // table 7-1, confirmed against op25's max_frame_lengths and on-air
 // measurement of 4 clean captures via cmd/diagnose25).
@@ -729,7 +729,7 @@ func TestExtractVoiceCW_PositionContinuity(t *testing.T) {
 // audio artifacting after the wideband-ring fix: every TSDU consumed 504
 // extra dibits = the next 2.3 TSBKs, and every HDU consumed 252 extra dibits
 // = the first ~30% of the following LDU1.
-func TestPayloadLen_OnAirFrameLengths(t *testing.T) {
+func TestPayloadLen_OnAirFrameCaps(t *testing.T) {
 	cases := []struct {
 		duid       uint8
 		name       string
@@ -738,7 +738,7 @@ func TestPayloadLen_OnAirFrameLengths(t *testing.T) {
 		{0x0, "HDU", 396},
 		{0x3, "TDU", 72},
 		{0x5, "LDU1", 864},
-		{0x7, "TSDU", 360},
+		{0x7, "TSDU maximum", 360},
 		{0xA, "LDU2", 864},
 		{0xF, "TDUlc", 216},
 	}
@@ -769,7 +769,7 @@ func TestFrameSync_AdjacentFramesNotSwallowed(t *testing.T) {
 		return s
 	}
 
-	// On-air pattern: ... TSDU(216) HDU(396) LDU1(864) LDU2(864) ...
+	// On-air pattern: ... TSDU(360) HDU(396) LDU1(864) LDU2(864) ...
 	var stream []Dibit
 	stream = append(stream, build(0x7, 360)...) // TSDU
 	stream = append(stream, build(0x0, 396)...) // HDU
@@ -804,6 +804,140 @@ func buildFrame(nac uint16, duid uint8) []Dibit {
 		s = append(s, 0)
 	}
 	return s
+}
+
+func buildTestTSDU(t *testing.T, nac uint16, lastFlags ...bool) []Dibit {
+	t.Helper()
+	var encoded []uint8
+	for i, last := range lastFlags {
+		args := [8]byte{byte(i + 1)}
+		var bits []uint8
+		if last {
+			bits = makeTSBKBits(t, uint8(OpcodeSystemServiceBcast), 0, args)
+		} else {
+			bits = makeTSBKBitsNoLast(t, uint8(OpcodeSystemServiceBcast), 0, args)
+		}
+		encoded = append(encoded, trellisEncode(bits)...)
+	}
+	stream := append([]Dibit(nil), syncWord[:]...)
+	stream = append(stream, buildNIDStream(nac, 0x7)...)
+	stream = append(stream, buildPayloadWithStatus(encoded)...)
+	return stream
+}
+
+func feedInChunks(fs *FrameSync, stream []Dibit, chunk int) []Frame {
+	var frames []Frame
+	for start := 0; start < len(stream); start += chunk {
+		end := start + chunk
+		if end > len(stream) {
+			end = len(stream)
+		}
+		frames = append(frames, fs.Feed(stream[start:end])...)
+	}
+	return frames
+}
+
+func TestFrameSync_TSDUEmitsOnLastBlock(t *testing.T) {
+	const nac = uint16(0x022)
+	for _, tc := range []struct {
+		name  string
+		flags []bool
+		chunk int
+	}{
+		{name: "one", flags: []bool{true}, chunk: 4096},
+		{name: "two across chunks", flags: []bool{false, true}, chunk: 19},
+		{name: "three across chunks", flags: []bool{false, false, true}, chunk: 17},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := buildTestTSDU(t, nac, tc.flags...)
+			fs := NewFrameSync()
+			frames := feedInChunks(fs, stream, tc.chunk)
+			if len(frames) != 1 {
+				t.Fatalf("frames = %d, want 1", len(frames))
+			}
+			f := frames[0]
+			if f.NID != (NID{NAC: nac, DUID: 0x7}) {
+				t.Fatalf("NID = %+v, want NAC=0x%03X DUID=0x7", f.NID, nac)
+			}
+			wantPayload := len(stream) - syncLen - nidSpan
+			if len(f.Payload) != wantPayload {
+				t.Fatalf("payload = %d dibits, want %d", len(f.Payload), wantPayload)
+			}
+			blocks := parseTSBKs(f.Payload)
+			if len(blocks) != len(tc.flags) {
+				t.Fatalf("decoded blocks = %d, want %d", len(blocks), len(tc.flags))
+			}
+			if !blocks[len(blocks)-1].LastBlock {
+				t.Fatal("final decoded block has LastBlock=false")
+			}
+			if fs.FramesEmitted != 1 || fs.MidPayloadResyncs != 0 {
+				t.Fatalf("FramesEmitted=%d MidPayloadResyncs=%d, want 1/0",
+					fs.FramesEmitted, fs.MidPayloadResyncs)
+			}
+		})
+	}
+}
+
+func TestFrameSync_TSDULastBlockPreservesSoftPayload(t *testing.T) {
+	stream := buildTestTSDU(t, 0x022, true)
+	soft := make([]float32, len(stream))
+	for i := range soft {
+		soft[i] = float32(i + 1)
+	}
+	fs := NewFrameSync()
+	frames := fs.FeedSoft(stream, soft)
+	if len(frames) != 1 {
+		t.Fatalf("frames = %d, want 1", len(frames))
+	}
+	if len(frames[0].Soft) != len(frames[0].Payload) {
+		t.Fatalf("soft/payload lengths = %d/%d", len(frames[0].Soft), len(frames[0].Payload))
+	}
+	payloadStart := syncLen + nidSpan
+	for i, got := range frames[0].Soft {
+		if want := soft[payloadStart+i]; got != want {
+			t.Fatalf("Soft[%d] = %v, want %v", i, got, want)
+		}
+	}
+}
+
+func TestFrameSync_TSDUPeekStateResets(t *testing.T) {
+	const nac = uint16(0x022)
+	for _, tc := range []struct {
+		name  string
+		reset func(*FrameSync)
+	}{
+		{name: "Reset", reset: (*FrameSync).Reset},
+		{name: "SoftReset", reset: (*FrameSync).SoftReset},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := NewFrameSync()
+			if frames := fs.Feed(buildTestTSDU(t, nac, false)); len(frames) != 0 {
+				t.Fatalf("non-last partial TSDU emitted %d frames", len(frames))
+			}
+			tc.reset(fs)
+			frames := fs.Feed(buildTestTSDU(t, nac, true))
+			if len(frames) != 1 {
+				t.Fatalf("frames after reset = %d, want 1", len(frames))
+			}
+		})
+	}
+}
+
+func TestFrameSync_TSDUMaximumCapWithoutLastBlock(t *testing.T) {
+	stream := buildTestTSDU(t, 0x022, false, false, false)
+	stream = append(stream, 0) // trailing status dibit reaches the 303-dibit cap
+	fs := NewFrameSync()
+	frames := fs.Feed(stream)
+	if len(frames) != 1 {
+		t.Fatalf("frames = %d, want 1 at the TSDU cap", len(frames))
+	}
+	blocks := parseTSBKs(frames[0].Payload)
+	if len(blocks) != 3 {
+		t.Fatalf("decoded blocks = %d, want 3", len(blocks))
+	}
+	if blocks[2].LastBlock {
+		t.Fatal("test requires the capped third block to have LastBlock=false")
+	}
 }
 
 // TestFrameSync_MidPayloadResync_DropsTruncatedFrame verifies defect A:

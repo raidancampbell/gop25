@@ -194,7 +194,7 @@ func TestPayloadLen_AllDUIDs(t *testing.T) {
 		0x0: 396 - syncLen - nidSpan, // HDU (792 bits)
 		0x3: 72 - syncLen - nidSpan,  // TDU (144 bits)
 		0x5: 864 - syncLen - nidSpan, // LDU1 (1728 bits)
-		0x7: 360 - syncLen - nidSpan, // TSDU single-block (720 bits)
+		0x7: 360 - syncLen - nidSpan, // TSDU maximum (three TSBKs; 720 bits)
 		0xA: 864 - syncLen - nidSpan, // LDU2 (1728 bits)
 		0xF: 216 - syncLen - nidSpan, // TDUlc (432 bits)
 	}
@@ -399,8 +399,8 @@ func TestParseLDU1_MotorolaUnitGPS(t *testing.T) {
 			lcBits[off+i] = uint8((v >> uint(n-1-i)) & 1)
 		}
 	}
-	pack(0, 8, 6)     // LCO=6
-	pack(8, 8, 0x90)  // MFID Motorola
+	pack(0, 8, 6)    // LCO=6
+	pack(8, 8, 0x90) // MFID Motorola
 	const latMag = 0x400000
 	const lonMag = 0x200000
 	pack(25, 23, latMag)

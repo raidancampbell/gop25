@@ -18,6 +18,9 @@ const (
 	// by the downstream NID-BCH + DUID-0xC peek-CRC backstops. Calibrated on the
 	// 2026-06-17 uplink corpus (see data/sndcp-uplink-analysis-20260617).
 	softSyncThresh = 0.62
+
+	tsduBlockDibits = trellisOut / 2
+	maxTSDUBlocks   = 3
 )
 
 // syncPol is the per-symbol polarity (+1/-1) of the frame sync word in C4FM
@@ -64,7 +67,7 @@ func payloadLen(duid uint8) int {
 		return 72 - syncLen - nidSpan
 	case 0x5: // LDU1 — 1728 bits
 		return 864 - syncLen - nidSpan
-	case 0x7: // TSDU (single-block) — 720 bits
+	case 0x7: // TSDU maximum — up to three 98-dibit TSBK blocks
 		return 360 - syncLen - nidSpan
 	case 0xA: // LDU2 — 1728 bits
 		return 864 - syncLen - nidSpan
@@ -116,11 +119,12 @@ type FrameSync struct {
 	// 1:1 aligned, when the caller is using FeedSoft. Empty (nil-or-zero-len)
 	// when the legacy soft-less Feed path is in use; emitted Frame.Soft is then
 	// nil. Reset everywhere payload is reset.
-	softPayload []float32
-	payloadCap  int  // expected payload dibits for current DUID
-	pduPeeked   bool // true once the PDU header peek has run for the current frame
-	currentNID  NID
-	syncCount   int // consecutive successful syncs
+	softPayload      []float32
+	payloadCap       int  // expected payload dibits for current DUID
+	pduPeeked        bool // true once the PDU header peek has run for the current frame
+	tsduBlocksPeeked int  // complete TSBK blocks already peeked in the current TSDU
+	currentNID       NID
+	syncCount        int // consecutive successful syncs
 
 	// NAC hint: once we have decoded at least nacHintMinFrames consecutive frames
 	// with the same NAC, we record it and use decodeNIDWithHintDist for subsequent
@@ -200,6 +204,7 @@ func (fs *FrameSync) Reset() {
 	fs.softPayload = fs.softPayload[:0]
 	fs.payloadCap = 0
 	fs.pduPeeked = false
+	fs.tsduBlocksPeeked = 0
 	fs.syncCount = 0
 	// hintNAC / hintNACSet / hintNACCount deliberately preserved
 }
@@ -225,8 +230,53 @@ func (fs *FrameSync) SoftReset() {
 	fs.softPayload = fs.softPayload[:0]
 	fs.payloadCap = 0
 	fs.pduPeeked = false
+	fs.tsduBlocksPeeked = 0
 	fs.syncCount = 0
 	// Ring buffer, hintNAC deliberately preserved
+}
+
+func gatherTSDUBlock(payload []Dibit, blockIndex int) ([trellisOut]uint8, bool) {
+	var encoded [trellisOut]uint8
+	if blockIndex < 0 || blockIndex >= maxTSDUBlocks {
+		return encoded, false
+	}
+	first := blockIndex * tsduBlockDibits
+	seen, written := 0, 0
+	for i, d := range payload {
+		if isStatusPosition(i) {
+			continue
+		}
+		if seen >= first {
+			encoded[written*2] = uint8((d >> 1) & 1)
+			encoded[written*2+1] = uint8(d & 1)
+			written++
+			if written == tsduBlockDibits {
+				return encoded, true
+			}
+		}
+		seen++
+	}
+	return encoded, false
+}
+
+func peekTSDULast(payload []Dibit, blockIndex int) (last bool, ready bool) {
+	encoded, ready := gatherTSDUBlock(payload, blockIndex)
+	if !ready {
+		return false, false
+	}
+	decoded, ok := viterbiDecode(encoded[:])
+	return ok && decoded[0] == 1, true
+}
+
+func (fs *FrameSync) copyFramePayload(end int) Frame {
+	f := Frame{
+		NID:     fs.currentNID,
+		Payload: append([]Dibit(nil), fs.payload[:end]...),
+	}
+	if len(fs.softPayload) > 0 {
+		f.Soft = append([]float32(nil), fs.softPayload[:end]...)
+	}
+	return f
 }
 
 // feedOne advances the state machine by one dibit and returns the completed
@@ -345,6 +395,7 @@ func (fs *FrameSync) feedOne(d Dibit, sv float32, haveSoft bool) (Frame, bool) {
 		fs.payload = fs.payload[:0]
 		fs.softPayload = fs.softPayload[:0]
 		fs.pduPeeked = false
+		fs.tsduBlocksPeeked = 0
 		fs.state = stateCollectPayload
 		return Frame{}, false
 
@@ -404,6 +455,19 @@ func (fs *FrameSync) feedOne(d Dibit, sv float32, haveSoft bool) (Frame, bool) {
 		if fs.ringIdx == 0 {
 			fs.ringFull = true
 		}
+		if fs.currentNID.DUID == 0x7 && fs.tsduBlocksPeeked < maxTSDUBlocks {
+			last, ready := peekTSDULast(fs.payload, fs.tsduBlocksPeeked)
+			if ready {
+				fs.tsduBlocksPeeked++
+				if last {
+					f := fs.copyFramePayload(len(fs.payload))
+					fs.state = stateSearching
+					fs.tsduBlocksPeeked = 0
+					fs.FramesEmitted++
+					return f, true
+				}
+			}
+		}
 		// Mid-payload resync: if a TX truncates mid-frame and a new TX keys
 		// up, its sync would otherwise be absorbed as this frame's payload
 		// tail and the new HDU lost. Once the ring is fully past the
@@ -416,6 +480,7 @@ func (fs *FrameSync) feedOne(d Dibit, sv float32, haveSoft bool) (Frame, bool) {
 			fs.MidPayloadResyncs++
 			fs.payload = fs.payload[:0]
 			fs.softPayload = fs.softPayload[:0]
+			fs.tsduBlocksPeeked = 0
 			fs.state = stateCollectNID
 			fs.nidIdx = 0
 			fs.nidRawIdx = 0
@@ -425,17 +490,10 @@ func (fs *FrameSync) feedOne(d Dibit, sv float32, haveSoft bool) (Frame, bool) {
 		if len(fs.payload) < fs.payloadCap {
 			return Frame{}, false
 		}
-		f := Frame{
-			NID:     fs.currentNID,
-			Payload: make([]Dibit, len(fs.payload)),
-		}
-		copy(f.Payload, fs.payload)
-		if len(fs.softPayload) > 0 {
-			f.Soft = make([]float32, len(fs.softPayload))
-			copy(f.Soft, fs.softPayload)
-		}
+		f := fs.copyFramePayload(len(fs.payload))
 		// Ring is already warm from the payload dibits above — no need to reset it.
 		fs.state = stateSearching
+		fs.tsduBlocksPeeked = 0
 		fs.FramesEmitted++
 		return f, true
 	}
