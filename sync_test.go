@@ -894,6 +894,31 @@ func TestFrameSync_TSDUEmitsOnLastBlock(t *testing.T) {
 	}
 }
 
+func TestFrameSync_ShortTSDUReachesControlDecoder(t *testing.T) {
+	const nac = uint16(0x022)
+	stream := buildTestTSDU(t, nac, true)
+	fs := NewFrameSync()
+	frames := fs.Feed(stream)
+	if len(frames) != 1 {
+		t.Fatalf("frames = %d, want 1", len(frames))
+	}
+
+	dec := &P25Decoder{}
+	_, control := dec.processFrame(frames[0])
+	if len(control) != 1 || control[0].TSBK == nil {
+		t.Fatalf("control = %+v, want one TSBK frame", control)
+	}
+	got := control[0]
+	if got.NAC != nac || got.DUID != 0x7 {
+		t.Fatalf("control NAC/DUID = 0x%03X/0x%X, want 0x%03X/0x7",
+			got.NAC, got.DUID, nac)
+	}
+	if got.TSBK.Opcode != OpcodeSystemServiceBcast || !got.TSBK.LastBlock {
+		t.Fatalf("TSBK opcode/last = 0x%02X/%v, want 0x%02X/true",
+			got.TSBK.Opcode, got.TSBK.LastBlock, OpcodeSystemServiceBcast)
+	}
+}
+
 func TestFrameSync_TSDULastBlockPreservesSoftPayload(t *testing.T) {
 	stream := buildTestTSDU(t, 0x022, true)
 	soft := make([]float32, len(stream))
