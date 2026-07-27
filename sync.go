@@ -115,10 +115,10 @@ type FrameSync struct {
 	nidIdx    int // data dibits collected so far
 	nidRawIdx int // total dibits received (including status positions)
 	payload   []Dibit
-	// softPayload holds the normalized soft value for each Dibit in payload,
-	// 1:1 aligned, when the caller is using FeedSoft. Empty (nil-or-zero-len)
-	// when the legacy soft-less Feed path is in use; emitted Frame.Soft is then
-	// nil. Reset everywhere payload is reset.
+	// softPayload holds the normalized soft value for each Dibit in payload
+	// only while coverage is complete and 1:1 aligned. Mixing Feed and FeedSoft
+	// during a payload clears partial coverage, so emitted Frame.Soft is nil.
+	// Reset everywhere payload is reset.
 	softPayload      []float32
 	payloadCap       int  // expected payload dibits for current DUID
 	pduPeeked        bool // true once the PDU header peek has run for the current frame
@@ -287,7 +287,7 @@ func (fs *FrameSync) copyFramePayload(end int) Frame {
 		NID:     fs.currentNID,
 		Payload: append([]Dibit(nil), fs.payload[:end]...),
 	}
-	if len(fs.softPayload) > 0 {
+	if len(fs.softPayload) >= end {
 		f.Soft = append([]float32(nil), fs.softPayload[:end]...)
 	}
 	return f
@@ -295,9 +295,9 @@ func (fs *FrameSync) copyFramePayload(end int) Frame {
 
 // feedOne advances the state machine by one dibit and returns the completed
 // frame, if any. sv is the dibit's normalized soft value (only meaningful when
-// haveSoft is true; ignored otherwise). When haveSoft, sv is appended to
-// softPayload in lockstep with payload, and the eventual Frame.Soft is filled
-// from softPayload; on the soft-less path Frame.Soft is left nil.
+// haveSoft is true; ignored otherwise). Soft values are retained only while
+// every payload dibit has one, and the eventual Frame.Soft is filled from that
+// complete coverage; mixed or soft-less input leaves Frame.Soft nil.
 func (fs *FrameSync) feedOne(d Dibit, sv float32, haveSoft bool) (Frame, bool) {
 	switch fs.state {
 	case stateSearching:
@@ -415,8 +415,10 @@ func (fs *FrameSync) feedOne(d Dibit, sv float32, haveSoft bool) (Frame, bool) {
 
 	case stateCollectPayload:
 		fs.payload = append(fs.payload, d)
-		if haveSoft {
+		if haveSoft && len(fs.softPayload) == len(fs.payload)-1 {
 			fs.softPayload = append(fs.softPayload, sv)
+		} else {
+			fs.softPayload = fs.softPayload[:0]
 		}
 		// PDU (DUID 0xC) frames are variable-length: payloadLen(0xC) returns the
 		// minimum span (1 header + 3 data blocks). Once one full header block

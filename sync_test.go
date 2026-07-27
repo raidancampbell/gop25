@@ -917,6 +917,57 @@ func TestFrameSync_ShortTSDUReachesControlDecoder(t *testing.T) {
 		t.Fatalf("TSBK opcode/last = 0x%02X/%v, want 0x%02X/true",
 			got.TSBK.Opcode, got.TSBK.LastBlock, OpcodeSystemServiceBcast)
 	}
+	if got.TSBK.RawArgs[0] != 1 {
+		t.Fatalf("TSBK RawArgs[0] = %d, want 1", got.TSBK.RawArgs[0])
+	}
+	for i, arg := range got.TSBK.RawArgs[1:] {
+		if arg != 0 {
+			t.Fatalf("TSBK RawArgs[%d] = %d, want 0", i+1, arg)
+		}
+	}
+}
+
+func TestFrameSync_TSDUMixedFeedOmitsIncompleteSoftPayload(t *testing.T) {
+	stream := buildTestTSDU(t, 0x022, true)
+	split := syncLen + nidSpan + 10
+	for _, tc := range []struct {
+		name       string
+		feedPrefix func(*FrameSync, []Dibit) []Frame
+		feedSuffix func(*FrameSync, []Dibit) []Frame
+	}{
+		{
+			name: "Feed then FeedSoft",
+			feedPrefix: func(fs *FrameSync, dibits []Dibit) []Frame {
+				return fs.Feed(dibits)
+			},
+			feedSuffix: func(fs *FrameSync, dibits []Dibit) []Frame {
+				return fs.FeedSoft(dibits, make([]float32, len(dibits)))
+			},
+		},
+		{
+			name: "FeedSoft then Feed",
+			feedPrefix: func(fs *FrameSync, dibits []Dibit) []Frame {
+				return fs.FeedSoft(dibits, make([]float32, len(dibits)))
+			},
+			feedSuffix: func(fs *FrameSync, dibits []Dibit) []Frame {
+				return fs.Feed(dibits)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := NewFrameSync()
+			if frames := tc.feedPrefix(fs, stream[:split]); len(frames) != 0 {
+				t.Fatalf("prefix emitted %d frames, want 0", len(frames))
+			}
+			frames := tc.feedSuffix(fs, stream[split:])
+			if len(frames) != 1 {
+				t.Fatalf("suffix emitted %d frames, want 1", len(frames))
+			}
+			if frames[0].Soft != nil {
+				t.Fatalf("Soft = %v, want nil for incomplete soft coverage", frames[0].Soft)
+			}
+		})
+	}
 }
 
 func TestFrameSync_TSDULastBlockPreservesSoftPayload(t *testing.T) {
