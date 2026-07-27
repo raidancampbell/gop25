@@ -268,6 +268,20 @@ func peekTSDULast(payload []Dibit, blockIndex int) (last bool, ready bool) {
 	return ok && decoded[0] == 1, true
 }
 
+func completeTSDUBlocks(payload []Dibit) int {
+	dataDibits := 0
+	for i := range payload {
+		if !isStatusPosition(i) {
+			dataDibits++
+		}
+	}
+	blocks := dataDibits / tsduBlockDibits
+	if blocks > maxTSDUBlocks {
+		return maxTSDUBlocks
+	}
+	return blocks
+}
+
 func (fs *FrameSync) copyFramePayload(end int) Frame {
 	f := Frame{
 		NID:     fs.currentNID,
@@ -477,6 +491,21 @@ func (fs *FrameSync) feedOne(d Dibit, sv float32, haveSoft bool) (Frame, bool) {
 		// truncations on noisy payloads.
 		if len(fs.payload) >= syncLen && len(fs.payload) < fs.payloadCap &&
 			fs.correlate() <= syncThresh {
+			if fs.currentNID.DUID == 0x7 {
+				end := len(fs.payload) - syncLen
+				if end >= 0 && completeTSDUBlocks(fs.payload[:end]) > 0 {
+					f := fs.copyFramePayload(end)
+					fs.payload = fs.payload[:0]
+					fs.softPayload = fs.softPayload[:0]
+					fs.tsduBlocksPeeked = 0
+					fs.state = stateCollectNID
+					fs.nidIdx = 0
+					fs.nidRawIdx = 0
+					fs.SyncDetections++
+					fs.FramesEmitted++
+					return f, true
+				}
+			}
 			fs.MidPayloadResyncs++
 			fs.payload = fs.payload[:0]
 			fs.softPayload = fs.softPayload[:0]

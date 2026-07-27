@@ -825,6 +825,22 @@ func buildTestTSDU(t *testing.T, nac uint16, lastFlags ...bool) []Dibit {
 	return stream
 }
 
+func buildCorruptTestTSDU(t *testing.T, nac uint16) []Dibit {
+	t.Helper()
+	bits := makeTSBKBits(t, uint8(OpcodeSystemServiceBcast), 0, [8]byte{1})
+	encoded := trellisEncode(bits)
+	for i := 0; i < 48; i++ {
+		encoded[i] ^= 1
+	}
+	if _, ok := viterbiDecode(encoded); ok {
+		t.Fatal("test corruption unexpectedly retained a valid TSBK CRC")
+	}
+	stream := append([]Dibit(nil), syncWord[:]...)
+	stream = append(stream, buildNIDStream(nac, 0x7)...)
+	stream = append(stream, buildPayloadWithStatus(encoded)...)
+	return stream
+}
+
 func feedInChunks(fs *FrameSync, stream []Dibit, chunk int) []Frame {
 	var frames []Frame
 	for start := 0; start < len(stream); start += chunk {
@@ -897,6 +913,59 @@ func TestFrameSync_TSDULastBlockPreservesSoftPayload(t *testing.T) {
 		if want := soft[payloadStart+i]; got != want {
 			t.Fatalf("Soft[%d] = %v, want %v", i, got, want)
 		}
+	}
+}
+
+func TestFrameSync_TSDUCorruptLastBlockUsesNextSync(t *testing.T) {
+	const nac = uint16(0x022)
+	stream := buildCorruptTestTSDU(t, nac)
+	stream = append(stream, buildFrame(nac, 0x3)...)
+	soft := make([]float32, len(stream))
+	for i := range soft {
+		soft[i] = float32(i + 1)
+	}
+
+	fs := NewFrameSync()
+	frames := fs.FeedSoft(stream, soft)
+	if len(frames) != 2 {
+		t.Fatalf("frames = %d, want corrupt TSDU plus following TDU", len(frames))
+	}
+	if frames[0].NID.DUID != 0x7 || frames[1].NID.DUID != 0x3 {
+		t.Fatalf("DUIDs = [0x%X 0x%X], want [0x7 0x3]",
+			frames[0].NID.DUID, frames[1].NID.DUID)
+	}
+	if got := parseTSBKs(frames[0].Payload); len(got) != 0 {
+		t.Fatalf("corrupt TSDU decoded %d TSBKs, want 0", len(got))
+	}
+	if len(frames[0].Soft) != len(frames[0].Payload) {
+		t.Fatalf("fallback soft/payload lengths = %d/%d",
+			len(frames[0].Soft), len(frames[0].Payload))
+	}
+	payloadStart := syncLen + nidSpan
+	for i, got := range frames[0].Soft {
+		if want := soft[payloadStart+i]; got != want {
+			t.Fatalf("fallback Soft[%d] = %v, want %v", i, got, want)
+		}
+	}
+	if fs.MidPayloadResyncs != 0 {
+		t.Fatalf("MidPayloadResyncs = %d, want 0", fs.MidPayloadResyncs)
+	}
+}
+
+func TestFrameSync_TSDUResyncBeforeCompleteBlockStillDrops(t *testing.T) {
+	const nac = uint16(0x022)
+	stream := append([]Dibit(nil), syncWord[:]...)
+	stream = append(stream, buildNIDStream(nac, 0x7)...)
+	stream = append(stream, make([]Dibit, 40)...)
+	stream = append(stream, buildFrame(nac, 0x3)...)
+
+	fs := NewFrameSync()
+	frames := fs.Feed(stream)
+	if len(frames) != 1 || frames[0].NID.DUID != 0x3 {
+		t.Fatalf("frames = %+v, want only the following TDU", frames)
+	}
+	if fs.MidPayloadResyncs != 1 {
+		t.Fatalf("MidPayloadResyncs = %d, want 1", fs.MidPayloadResyncs)
 	}
 }
 
