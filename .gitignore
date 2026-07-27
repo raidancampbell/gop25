@@ -11,3 +11,6 @@
 # Large capture fixtures (drop locally to enable integration tests; see testdata/.gitkeep)
 testdata/**/*.iq
 testdata/**/*.wav
+
+# Local isolated implementation worktrees
+.worktrees/
